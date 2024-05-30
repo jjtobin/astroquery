@@ -415,7 +415,7 @@ class NraoClass(BaseQuery):
         not_done = True
         while not_done:
             time.sleep(1)
-            print(".", end='')
+            print(".", end='', flush=True)
             resp = self._request('GET', wait_url, cache=False)
             resp.raise_for_status()
             if 'INPROGRESS' in resp.text:
