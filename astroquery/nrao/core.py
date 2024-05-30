@@ -335,10 +335,16 @@ class NraoClass(BaseQuery):
         return result
 
 
-    def _get_data(self, solr_id, email=None):
+    def _get_data(self, solr_id, email=None, workflow='runBasicMsWorkflow',
+                  apply_flags=True
+                 ):
         """
         Defining this as a private function for now because it's using an
         unverified API
+
+        Parameters
+        ----------
+        workflow : 'runBasicMsWorkflow', "runDownloadWorkflow"
         """
         url = f'{self.archive_url}/portal/#/subscanViewer/{solr_id}'
 
@@ -369,9 +375,16 @@ class NraoClass(BaseQuery):
 
         instrument = ('VLBA' if 'vlba' in solr_id.lower() else
                       'VLA' if 'vla' in solr_id.lower() else
+                      'EVLA' if 'nrao' in solr_id.lower() else
                       'GBT' if 'gbt' in solr_id.lower() else None)
         if instrument is None:
             raise ValueError("Invalid instrument")
+
+        if instrument == 'VLBA':
+            downloadDataFormat = "VLBARaw"
+        elif instrument in ('VLA', 'EVLA'):
+            # there are other options!
+            downloadDataFormat = 'MS'
 
         post_data = {
           "emailNotification": email,
@@ -381,11 +394,23 @@ class NraoClass(BaseQuery):
           "p_project": project_code,
           "productLocator": locator,
           "requestCommand": "startVlaPPIWorkflow",
-          "p_workflowEventName": "runDownloadWorkflow",
-          "p_downloadDataFormat": f"{instrument}Raw",
+          "p_workflowEventName": workflow,
+          "p_downloadDataFormat": downloadDataFormat,
           "p_intentsFileName": "intents_hifv.xml",
           "p_proceduresFileName": "procedure_hifv.xml"
         }
+
+        if instrument in ('VLA', 'EVLA'):
+            post_data['p_applyTelescopeFlags'] = apply_flags
+            casareq = self._request('GET',
+                                    'https://data.nrao.edu/archive-service/restapi_get_casa_version_list',
+                                    cache=False
+                                   )
+            casareq.raise_for_status()
+            casavdata = json.loads(casareq.json())
+            for casav in casavdata['casa_version_list']:
+                if 'recommended' in casav['version']:
+                    post_data['p_casaHome'] = casav['path']
 
         presp = self._request('POST',
                               'https://data.nrao.edu/rh/submission',
