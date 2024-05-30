@@ -8,6 +8,8 @@ import tarfile
 import string
 import requests
 import warnings
+import json
+import time
 
 from pkg_resources import resource_filename
 from bs4 import BeautifulSoup
@@ -331,6 +333,98 @@ class NraoClass(BaseQuery):
             raise RuntimeError('BUG: Unexpected result None')
 
         return result
+
+
+    def _get_data(self, solr_id, email=None):
+        """
+        Defining this as a private function for now because it's using an
+        unverified API
+        """
+        url = f'{self.archive_url}/portal/#/subscanViewer/{solr_id}'
+
+        #self._session.headers['User-Agent'] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+        resp = self._request('GET', url, cache=False)
+        resp.raise_for_status()
+
+        eb_deets = self._request('GET',
+                                 'https://data.nrao.edu/archive-service/restapi_get_full_exec_block_details',
+                                 params={'solr_id': solr_id},
+                                 cache=False
+                                )
+        eb_deets.raise_for_status()
+        assert len(self._session.cookies) > 0
+
+        resp1b = self._request('GET',
+                               'https://data.nrao.edu/archive-service/restapi_spw_details_view',
+                               params={'exec_block_id': solr_id.split(":")[-1]},
+                               cache=False
+                              )
+        resp1b.raise_for_status()
+
+        # returned data is doubly json-encoded
+        jd = json.loads(eb_deets.json())
+        locator = jd['curr_eb']['sci_prod_locator']
+        project_code = jd['curr_eb']['project_code']
+
+        instrument = ('VLBA' if 'vlba' in solr_id.lower() else
+                      'VLA' if 'vla' in solr_id.lower() else
+                      'GBT' if 'gbt' in solr_id.lower() else None)
+        if instrument is None:
+            raise ValueError("Invalid instrument")
+
+        post_data = {
+          "emailNotification": email,
+          "requestDescription": f"{instrument} Download Request",
+          "archive": "VLA",
+          "p_telescope": instrument,
+          "p_project": project_code,
+          "productLocator": locator,
+          "requestCommand": "startVlaPPIWorkflow",
+          "p_workflowEventName": "runDownloadWorkflow",
+          "p_downloadDataFormat": f"{instrument}Raw",
+          "p_intentsFileName": "intents_hifv.xml",
+          "p_proceduresFileName": "procedure_hifv.xml"
+        }
+
+        presp = self._request('POST',
+                              'https://data.nrao.edu/rh/submission',
+                              data=post_data,
+                              cache=False
+                             )
+        presp.raise_for_status()
+
+        # DEBUG print(f"presp.url: {presp.url}")
+        # DEBUG print(f"cookies: {self._session.cookies}")
+        resp2 = self._request('GET', presp.url, cache=False)
+        resp2.raise_for_status()
+
+        for row in resp2.text.split():
+            if 'window.location.href=' in row:
+                subrespurl = row.split("'")[1]
+
+        # DEBUG print(f"subrespurl: {subrespurl}")
+        # DEBUG print(f"cookies: {self._session.cookies}")
+        nextresp = self._request('GET', subrespurl, cache=False)
+        wait_url = nextresp.url
+        nextresp.raise_for_status()
+
+        if 'https://data.nrao.edu/rh/requests/' not in wait_url:
+            raise ValueError(f"Got wrong URL from post request: {wait_url}")
+
+        not_done = True
+        while not_done:
+            time.sleep(1)
+            print(".", end='')
+            resp = self._request('GET', wait_url, cache=False)
+            resp.raise_for_status()
+            if 'INPROGRESS' in resp.text:
+                continue
+            elif 'REQUEST COMPLETED' in resp.text:
+                not_done = False
+
+        return resp
+
 
 
 Nrao = NraoClass()
